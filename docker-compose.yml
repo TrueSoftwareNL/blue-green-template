@@ -1,29 +1,23 @@
+version: "3.9"
+
+x-app-base: &app-base
+  build: ./app
+  restart: always
+  environment:
+    - PORT=3000
+
 services:
   app_blue:
-    build: ./app
-    restart: always
+    <<: *app-base
     profiles: ["blue"]
     environment:
       - APP_ENV=blue
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => { let data = ''; r.on('data', (chunk) => data += chunk); r.on('end', () => { try { const json = JSON.parse(data); process.exit(json.status === 'healthy' ? 0 : 1); } catch(e) { process.exit(1); } }); }).on('error', () => process.exit(1));"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 10s
 
   app_green:
-    build: ./app
-    restart: always
+    <<: *app-base
     profiles: ["green"]
     environment:
       - APP_ENV=green
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => { let data = ''; r.on('data', (chunk) => data += chunk); r.on('end', () => { try { const json = JSON.parse(data); process.exit(json.status === 'healthy' ? 0 : 1); } catch(e) { process.exit(1); } }); }).on('error', () => process.exit(1));"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 10s
 
   # certbot:
   #   image: certbot/certbot
@@ -34,8 +28,7 @@ services:
 
   nginx:
     image: nginx:alpine
-    profiles:
-      - core
+    profiles: ["core"]
     ports:
       - "80:80"
       - "443:443"
@@ -48,11 +41,4 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl:ro
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
-    depends_on:
-      app_blue:
-        condition: service_started
-        required: false
-      app_green:
-        condition: service_started
-        required: false
     restart: always
