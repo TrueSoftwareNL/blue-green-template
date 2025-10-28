@@ -1,5 +1,3 @@
-version: "3.9"
-
 x-app-base: &app-base
   build: ./app
   restart: always
@@ -9,13 +7,13 @@ x-app-base: &app-base
 services:
   app_blue:
     <<: *app-base
-    profiles: ["blue"]
+    profiles: ["blue","all"]
     environment:
       - APP_ENV=blue
 
   app_green:
     <<: *app-base
-    profiles: ["green"]
+    profiles: ["green","all"]
     environment:
       - APP_ENV=green
 
@@ -28,7 +26,7 @@ services:
 
   nginx:
     image: nginx:alpine
-    profiles: ["core"]
+    profiles: ["core","all"]
     ports:
       - "80:80"
       - "443:443"
