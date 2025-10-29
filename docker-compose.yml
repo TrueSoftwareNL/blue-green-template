@@ -3,6 +3,8 @@ x-app-base: &app-base
   restart: always
   environment:
     - PORT=3000
+  volumes:
+    - ./data/config:/app/config
 
 services:
   app_blue:
@@ -16,6 +18,31 @@ services:
     profiles: ["green","all"]
     environment:
       - APP_ENV=green
+
+  redis:
+    image: redis
+    profiles: ["core","all"]
+    restart: always
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  postgres:
+    image: postgres:16
+    profiles: ["core","all","db"]
+    restart: always
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./data/postgresql:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # certbot:
   #   image: certbot/certbot
@@ -40,3 +67,6 @@ services:
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
     restart: always
+
+volumes:
+  postgres_data:
