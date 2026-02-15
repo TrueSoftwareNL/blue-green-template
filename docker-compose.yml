@@ -1,41 +1,94 @@
+# =============================================================================
+# Blue-Green Deployment Template — Docker Compose
+# =============================================================================
+# Services are grouped by profiles for flexible startup:
+#   - core:     Infrastructure (nginx, redis, postgres)
+#   - blue:     Blue app instances
+#   - green:    Green app instances
+#   - all:      Everything (core + blue + green)
+#   - db:       Database only (for migrations, backups)
+#   - internet: Certbot for SSL (only in internet-facing mode)
+#
+# Usage:
+#   docker compose --profile core --profile blue up -d   # Start core + blue
+#   docker compose --profile all up -d                    # Start everything
+#   docker compose --profile core --profile green up -d   # Switch to green
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Shared app configuration — YAML anchor for DRY service definitions
+# Note: YAML merge (<<:) replaces entire keys, so 'environment' must be
+# repeated in each service. The anchor still shares build, restart, deploy,
+# healthcheck, and networks configuration.
+# -----------------------------------------------------------------------------
 x-app-base: &app-base
   build: ./app
   restart: always
   environment:
-    - PORT=3000
-  volumes:
-    - ./data/config:/app/config
+    PORT: "3000"
+  deploy:
+    replicas: ${APP_REPLICAS:-1}
+  healthcheck:
+    test: ["CMD", "./healthcheck.sh"]
+    interval: 5s
+    timeout: 3s
+    retries: 3
+    start_period: 10s
+  networks:
+    - frontend
+    - backend
 
 services:
+  # ---------------------------------------------------------------------------
+  # App Blue — Blue environment instances
+  # ---------------------------------------------------------------------------
   app_blue:
     <<: *app-base
-    profiles: ["blue","all"]
+    profiles: ["blue", "all"]
     environment:
-      - APP_ENV=blue
+      PORT: "3000"
+      APP_ENV: "blue"
 
+  # ---------------------------------------------------------------------------
+  # App Green — Green environment instances
+  # ---------------------------------------------------------------------------
   app_green:
     <<: *app-base
-    profiles: ["green","all"]
+    profiles: ["green", "all"]
     environment:
-      - APP_ENV=green
+      PORT: "3000"
+      APP_ENV: "green"
 
+  # ---------------------------------------------------------------------------
+  # Redis — Cache and session store
+  # ---------------------------------------------------------------------------
   redis:
-    image: redis
-    profiles: ["core","all"]
+    image: redis:7-alpine
+    profiles: ["core", "all"]
     restart: always
     ports:
       - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
 
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Primary database
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16
-    profiles: ["core","all","db"]
+    profiles: ["core", "all", "db"]
     restart: always
     ports:
       - "127.0.0.1:5432:5432"
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./data/postgresql:/var/lib/postgresql/data
     healthcheck:
@@ -43,30 +96,72 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - backend
 
-  # certbot:
-  #   image: certbot/certbot
-  #   volumes:
-  #     - ./certbot/conf:/etc/letsencrypt
-  #     - ./certbot/www:/var/www/certbot
-  #   entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+  # ---------------------------------------------------------------------------
+  # Certbot — SSL certificate management (internet mode only)
+  # Only starts with: docker compose --profile internet up -d
+  # ---------------------------------------------------------------------------
+  certbot:
+    image: certbot/certbot
+    profiles: ["internet"]
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    depends_on:
+      nginx:
+        condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Nginx — Reverse proxy, load balancer, SSL termination
+  # NGINX_MODE controls which config is mounted:
+  #   - "internet": SSL termination, HTTPS redirect, certbot integration
+  #   - "internal": HTTP only, behind main reverse proxy, trusts X-Forwarded-For
+  # ---------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
-    profiles: ["core","all"]
+    profiles: ["core", "all"]
     ports:
-      - "80:80"
-      - "443:443"
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Main config — selected by NGINX_MODE env var (internet or internal)
+      - ./nginx/nginx-${NGINX_MODE:-internet}.conf:/etc/nginx/nginx.conf:ro
+      # Modular config includes
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/includes:/etc/nginx/includes:ro
       - ./nginx/locations:/etc/nginx/locations:ro
       - ./nginx/upstreams:/etc/nginx/upstreams:ro
+      # SSL certificates (self-signed or Let's Encrypt)
       - ./nginx/ssl:/etc/nginx/ssl:ro
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:80/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    # Nginx depends on core infrastructure being healthy before starting
+    # Note: Does NOT depend on app_blue/app_green — the upstream uses 'resolve'
+    # to allow Nginx to start even when app containers aren't running yet
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - frontend
 
-volumes:
-  postgres_data:
+# -----------------------------------------------------------------------------
+# Network isolation:
+#   - frontend: Nginx ↔ App communication (Nginx cannot reach DB/Redis directly)
+#   - backend:  App ↔ Database/Cache communication
+# -----------------------------------------------------------------------------
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge

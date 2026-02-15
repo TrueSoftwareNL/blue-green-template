@@ -1,0 +1,39 @@
+# =============================================================================
+# .gitignore — Blue-Green Deployment Template
+# =============================================================================
+
+# Environment configuration (contains secrets, passwords, domain names)
+.env
+
+# SSL certificates (sensitive — never commit private keys)
+nginx/ssl/*.pem
+nginx/ssl/
+
+# Certbot data (Let's Encrypt account keys and certificates)
+certbot/conf/
+certbot/www/
+
+# PostgreSQL data (persistent database files)
+data/postgresql/*
+!data/postgresql/.gitkeep
+
+# Node.js dependencies
+node_modules/
+
+# Docker build artifacts
+*.tar
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Log files
+*.log
+logs/
