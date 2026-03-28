@@ -1,0 +1,156 @@
+name: Operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - test
+          - acceptance
+          - production
+      operation:
+        description: 'Operation to perform'
+        required: true
+        type: choice
+        options:
+          - deploy-config
+          - restart-app
+          - restart-all
+          - health-check
+          - view-logs
+          - switch-color
+          - rollback
+          {{OPERATIONS_DATABASE_OPTIONS}}
+
+# Only one operation at a time per environment
+concurrency:
+  group: ops-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    name: "${{ inputs.operation }} on ${{ inputs.target }}"
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      # ── Safety guard — block destructive operations on production ──
+      - name: Safety check — block destructive ops on production
+        if: inputs.target == 'production' && inputs.operation == 'purge-database'
+        run: |
+          echo "❌ BLOCKED: purge-database is NEVER allowed on production"
+          echo "This is a safety guard. Production data must never be purged."
+          exit 1
+
+      - name: Clean workspace
+        run: find . -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            deployment/scripts
+            deploy-config.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve target
+        id: target
+        run: |
+          case "${{ inputs.target }}" in
+            test)       echo "server=${{ secrets.TEST_SERVER }}" >> $GITHUB_OUTPUT ;;
+            acceptance) echo "server=${{ secrets.ACC_SERVER }}" >> $GITHUB_OUTPUT ;;
+            production) echo "server=${{ secrets.PROD_SERVER }}" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Setup SSH
+        id: ssh
+        run: |
+          SSH_CONFIG="/tmp/ssh-deploy-config"
+          cat > $SSH_CONFIG << EOF
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+
+          JUMP_HOST="${{ secrets.JUMP_HOST }}"
+          if [ -n "$JUMP_HOST" ]; then
+            echo "  ProxyCommand ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ${JUMP_HOST}" >> $SSH_CONFIG
+          fi
+
+          chmod 600 $SSH_CONFIG
+          echo "ssh_config=$SSH_CONFIG" >> $GITHUB_OUTPUT
+
+      - name: Upload remote-ops script
+        run: |
+          SSH_CONFIG="${{ steps.ssh.outputs.ssh_config }}"
+          REMOTE_HOST="${{ steps.target.outputs.server }}"
+          REMOTE_PATH="${{ secrets.DEPLOY_PATH }}"
+
+          scp -F $SSH_CONFIG deployment/scripts/remote-ops.sh deployment/scripts/health-check-wait.sh ${REMOTE_HOST}:${REMOTE_PATH}/scripts/
+          ssh -F $SSH_CONFIG ${REMOTE_HOST} "chmod +x ${REMOTE_PATH}/scripts/*.sh"
+
+      # ── deploy-config — push config from GitHub Secrets & restart ──
+      - name: "Op: deploy-config"
+        if: inputs.operation == 'deploy-config'
+        run: |
+          deployment/scripts/deploy-config-files.sh \
+            "${{ inputs.target }}" \
+            "${{ steps.ssh.outputs.ssh_config }}" \
+            "${{ steps.target.outputs.server }}" \
+            "${{ secrets.DEPLOY_PATH }}"
+
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh restart-app"
+          echo "✅ Config deployed and app restarted on ${{ inputs.target }}"
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+
+      # ── restart-app ────────────────────────────────────────
+      - name: "Op: restart-app"
+        if: inputs.operation == 'restart-app'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh restart-app"
+          echo "✅ App containers restarted on ${{ inputs.target }}"
+
+      # ── restart-all ────────────────────────────────────────
+      - name: "Op: restart-all"
+        if: inputs.operation == 'restart-all'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh restart-all"
+          echo "✅ All containers restarted on ${{ inputs.target }}"
+
+      # ── health-check ───────────────────────────────────────
+      - name: "Op: health-check"
+        if: inputs.operation == 'health-check'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh health-check"
+
+      # ── view-logs ──────────────────────────────────────────
+      - name: "Op: view-logs"
+        if: inputs.operation == 'view-logs'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh view-logs"
+
+      # ── switch-color ───────────────────────────────────────
+      - name: "Op: switch-color"
+        if: inputs.operation == 'switch-color'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh switch-color"
+          echo "✅ Blue-green color switched on ${{ inputs.target }}"
+
+      # ── rollback ───────────────────────────────────────────
+      - name: "Op: rollback"
+        if: inputs.operation == 'rollback'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh rollback"
+          echo "✅ Rolled back on ${{ inputs.target }}"
+
+      {{OPERATIONS_DATABASE_STEPS}}

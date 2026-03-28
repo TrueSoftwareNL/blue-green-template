@@ -1,0 +1,34 @@
+      # ── backup ─────────────────────────────────────────────
+      - name: "Op: backup"
+        if: inputs.operation == 'backup'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh backup"
+          echo "✅ Backup triggered on ${{ inputs.target }}"
+
+      # ── run-migrations (auto-backup on production) ─────────
+      - name: "Op: run-migrations"
+        if: inputs.operation == 'run-migrations'
+        run: |
+          BACKUP_FLAG=""
+          if [ "${{ inputs.target }}" = "production" ]; then
+            echo "🔒 Production: will trigger backup before migrations..."
+            BACKUP_FLAG="--backup"
+          fi
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh run-migrations ${BACKUP_FLAG}"
+
+      # ── purge-database (acceptance only — production is blocked above) ──
+      - name: "Op: purge-database"
+        if: inputs.operation == 'purge-database' && inputs.target != 'production'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh purge-database"
+          echo "✅ Database purged on ${{ inputs.target }}"
+
+      # ── db-table-counts ────────────────────────────────────
+      - name: "Op: db-table-counts"
+        if: inputs.operation == 'db-table-counts'
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ steps.target.outputs.server }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh db-table-counts"

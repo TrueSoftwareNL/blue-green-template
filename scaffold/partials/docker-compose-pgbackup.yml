@@ -1,0 +1,25 @@
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Backup — Automated backup sidecar
+  # Runs pg_dump on a cron schedule with automatic retention pruning
+  # ---------------------------------------------------------------------------
+  pg-backup:
+    image: postgres:16
+    profiles: ["core", "all"]
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/scripts/pg-backup.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      TZ: ${TZ:-Europe/Amsterdam}
+    volumes:
+      - ./pg-backup.sh:/scripts/pg-backup.sh:ro
+      - pg_backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend

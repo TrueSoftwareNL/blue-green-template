@@ -1,0 +1,119 @@
+# =============================================================================
+# {{PROJECT_NAME}} — Docker Compose (Blue-Green Deployment)
+# =============================================================================
+# Services are grouped by profiles for flexible startup:
+#   - core:     Infrastructure (nginx, dozzle{{CORE_SERVICES_COMMENT}})
+#   - blue:     Blue app instances
+#   - green:    Green app instances
+#   - all:      Everything (core + blue + green)
+{{DB_PROFILE_COMMENT}}#
+# Nginx operates behind ProxyBuilder (external reverse proxy that handles SSL).
+# This Nginx handles security headers, rate limiting, and blue-green routing.
+#
+# Usage:
+#   docker compose --profile core --profile blue up -d   # Start core + blue
+#   docker compose --profile all up -d                    # Start everything
+#   docker compose --profile core --profile green up -d   # Switch to green
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Shared app configuration — YAML anchor for DRY service definitions
+# Note: YAML merge (<<:) replaces entire keys, so 'environment' must be
+# repeated in each service. The anchor still shares build, restart, deploy,
+# healthcheck, and networks configuration.
+# -----------------------------------------------------------------------------
+x-app-base: &app-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: always
+  environment:
+    PORT: "{{APP_PORT}}"
+  deploy:
+    replicas: ${APP_REPLICAS:-1}
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://localhost:{{APP_PORT}}/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+    interval: 5s
+    timeout: 3s
+    retries: 3
+    start_period: 10s
+  networks:
+    - frontend
+    - backend
+
+services:
+  # ---------------------------------------------------------------------------
+  # App Blue — Blue environment instances
+  # ---------------------------------------------------------------------------
+  app_blue:
+    <<: *app-base
+    profiles: ["blue", "all"]
+    environment:
+      PORT: "{{APP_PORT}}"
+      APP_ENV: "blue"
+
+  # ---------------------------------------------------------------------------
+  # App Green — Green environment instances
+  # ---------------------------------------------------------------------------
+  app_green:
+    <<: *app-base
+    profiles: ["green", "all"]
+    environment:
+      PORT: "{{APP_PORT}}"
+      APP_ENV: "green"
+
+  # ---------------------------------------------------------------------------
+  # Nginx — Reverse proxy, load balancer, security hardening
+  # Operates behind ProxyBuilder (handles SSL termination externally)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    profiles: ["core", "all"]
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      # Main config — single mode (behind ProxyBuilder)
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Modular config includes
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/includes:/etc/nginx/includes:ro
+      - ./nginx/locations:/etc/nginx/locations:ro
+      - ./nginx/upstreams:/etc/nginx/upstreams:ro
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:80/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - frontend
+
+  # ---------------------------------------------------------------------------
+  # Dozzle — Web-based log viewer for all containers
+  # Access at http://localhost:${DOZZLE_PORT:-9999}
+  # ---------------------------------------------------------------------------
+  dozzle:
+    image: amir20/dozzle:latest
+    restart: unless-stopped
+    profiles: ["core", "all"]
+    ports:
+      - "${DOZZLE_PORT:-9999}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOZZLE_USERNAME: ${DOZZLE_USERNAME:-admin}
+      DOZZLE_PASSWORD: ${DOZZLE_PASSWORD}
+
+{{SERVICES_PARTIAL}}
+# -----------------------------------------------------------------------------
+# Network isolation:
+#   - frontend: Nginx ↔ App communication (Nginx cannot reach DB/Redis directly)
+#   - backend:  App ↔ Database/Cache communication
+# -----------------------------------------------------------------------------
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+
+{{VOLUMES_PARTIAL}}
