@@ -1,0 +1,2 @@
+# This directory holds per-environment config files (gitignored).
+# Create subdirectories: mkdir -p local_data/{test,acceptance,production}

@@ -525,6 +525,10 @@ function buildFileList(answers) {
     add('.github/workflows/operations-multi.yml', '.github/workflows/operations.yml');
   }
 
+  // --- .gitignore + local_data (always) ---
+  add('.gitignore.template', '.gitignore');
+  add('local_data/.gitkeep', 'local_data/.gitkeep');
+
   return files;
 }
 

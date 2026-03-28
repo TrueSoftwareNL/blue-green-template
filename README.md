@@ -1,8 +1,83 @@
 # Blue-Green Deployment Template
 
-A production-ready **blue-green deployment** infrastructure template using Docker Compose, Nginx, Node.js/Express, PostgreSQL, and Redis.
+A production-ready **blue-green deployment** infrastructure template for [BlendSDK](https://github.com/AgeOfLearning/blendsdk)/WebAFX applications. Provides zero-downtime deployments via Docker Compose, Nginx, GitHub Actions CI/CD, and declarative config management.
 
-Designed to operate behind [ProxyBuilder](https://github.com/TrueSoftwareNL/nginx-proxy) — an external reverse proxy that handles SSL termination and certificate management.
+Designed to operate behind [ProxyBuilder](https://github.com/TrueSoftwareNL/nginx-proxy) — an external reverse proxy that handles SSL termination.
+
+## Quick Install
+
+Add complete deployment infrastructure to your project with a single command:
+
+```bash
+# Interactive mode — answers questions about your project
+curl -fsSL https://raw.githubusercontent.com/TrueSoftwareNL/blue-green-template/master/install.sh | bash
+
+# Non-interactive mode — provide all answers via flags
+curl -fsSL https://raw.githubusercontent.com/TrueSoftwareNL/blue-green-template/master/install.sh | bash -s -- \
+  --name my-app --port 3000 --with-postgres --single
+
+# Pin to a specific version
+BG_VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/TrueSoftwareNL/blue-green-template/v1.0.0/install.sh | bash
+```
+
+### Scaffold Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--name <name>` | Project name (required for non-interactive) | Directory name |
+| `--port <port>` | Application port | `3000` |
+| `--nginx-port <port>` | Nginx HTTP port | `80` |
+| `--replicas <count>` | App replicas per color | `2` |
+| `--entry <command>` | App entrypoint command | `node server.js` |
+| `--with-postgres` | Include PostgreSQL | Ask (interactive) |
+| `--no-postgres` | Exclude PostgreSQL | — |
+| `--with-redis` | Include Redis | No |
+| `--no-redis` | Exclude Redis | — |
+| `--single` | Single-server topology | Default |
+| `--multi` | Multi-server topology | — |
+| `--force` | Overwrite existing files | Skip existing |
+| `--dry-run` | Preview without writing | — |
+
+## What Gets Generated
+
+The scaffold creates a complete deployment infrastructure tailored to your project:
+
+```
+your-project/
+├── deployment/                     # Docker deployment directory
+│   ├── docker-compose.yml          # Blue/green profiles, Nginx, Dozzle, (Postgres, Redis)
+│   ├── Dockerfile                  # Multi-stage Node.js build (tarball-based)
+│   ├── .env.example                # Environment variable template
+│   ├── pg-backup.sh                # PostgreSQL backup script (if Postgres enabled)
+│   ├── nginx/                      # Modular Nginx configuration
+│   │   ├── nginx.conf              # Main config (behind ProxyBuilder)
+│   │   ├── conf.d/                 # Server-level includes
+│   │   ├── includes/               # Shared config (headers, proxy, security)
+│   │   ├── locations/              # Location blocks (numbered for ordering)
+│   │   └── upstreams/              # Blue/green upstream definitions
+│   └── scripts/                    # Server-side operational scripts
+│       ├── remote-ops.sh           # 18 subcommands: deploy, switch, rollback, etc.
+│       ├── health-check-wait.sh    # Health check polling utility
+│       ├── deploy-config-files.sh  # GitHub Actions → server config deployment
+│       └── resolve-config.js       # JSON config manifest parser
+├── scripts/
+│   └── push-secrets.sh             # Local files → GitHub Secrets (via gh CLI)
+├── deploy-config.json              # Declarative config file manifest
+├── deploy-package.sh               # Tarball builder for deployment artifacts
+├── .github/
+│   ├── SECRETS-SETUP.md            # GitHub Secrets documentation
+│   └── workflows/
+│       ├── build-test.yml          # CI: build + test on every push/PR
+│       ├── release.yml             # CD: build → test → deploy → blue-green switch
+│       └── operations.yml          # Ops: health-check, restart, backup, rollback
+├── local_data/                     # Per-environment config (gitignored)
+└── .gitignore                      # Configured for deployment project
+```
+
+**Multi-server topology** also includes:
+- `deploy-inventory.json` — Server inventory per environment
+- `deployment/scripts/resolve-servers.js` — Inventory → GitHub Actions matrix
+- `deployment/scripts/multi-deploy.sh` — Deployment server fan-out script
 
 ## Architecture
 
@@ -29,212 +104,162 @@ ProxyBuilder ──────► │    Nginx     │ ◄── Security heade
 ```
 
 **Key features:**
-- **Zero-downtime deployments** by switching traffic between blue and green environments
-- **Full security headers** (HSTS, CSP, X-Frame-Options, etc.) — ProxyBuilder is a passthrough proxy that adds no headers
-- **Rate limiting** keyed on real client IP (X-Forwarded-For from ProxyBuilder)
+- **Zero-downtime deployments** via blue-green environment switching
+- **Full security headers** (HSTS, CSP, X-Frame-Options, etc.)
+- **Rate limiting** keyed on real client IP (X-Forwarded-For)
 - **GDPR-compliant logging** with anonymized IP addresses
+- **GitHub Actions CI/CD** with self-hosted runner cleanup
+- **Declarative config management** (deploy-config.json + push-secrets.sh)
+- **Multi-server support** (1 to 200+ servers)
+- **Dozzle** web-based log viewer on every server
 
-## Prerequisites
+## Deployment Topologies
 
-- [Docker](https://docs.docker.com/get-docker/) (20.10+)
-- [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
-- ProxyBuilder (or compatible reverse proxy) handling SSL termination
+### Single Server
 
-## Quick Start
-
-### 1. Configure Environment
+One server per environment (test, acceptance, production). Workflows deploy via SSH directly.
 
 ```bash
-# Copy the example .env (adjust values for your setup)
-cp .env.example .env
+curl -fsSL .../install.sh | bash -s -- --name myapp --single
 ```
 
-### 2. Start Services
+### Multi Server
+
+Multiple servers per environment. Supports:
+- **Direct SSH** (2-20 servers) — GitHub Actions matrix strategy
+- **Jump host** — SSH through a bastion host
+- **Deployment server** (20-200+ servers) — Fan-out from a central deployment node
 
 ```bash
-# Start core infrastructure + blue environment
+curl -fsSL .../install.sh | bash -s -- --name myapp --multi
+```
+
+Edit `deploy-inventory.json` to define your server topology.
+
+## Post-Install Setup
+
+### 1. Configure Environments
+
+```bash
+mkdir -p local_data/{test,acceptance,production}
+cp deployment/.env.example local_data/test/.env
+cp deployment/.env.example local_data/acceptance/.env
+cp deployment/.env.example local_data/production/.env
+# Edit each .env with environment-specific values
+```
+
+### 2. Push Secrets to GitHub
+
+```bash
+./scripts/push-secrets.sh test
+./scripts/push-secrets.sh acceptance
+./scripts/push-secrets.sh production
+# Or all at once:
+./scripts/push-secrets.sh --all
+```
+
+### 3. Set Infrastructure Secrets
+
+Go to **GitHub → Settings → Secrets and variables → Actions** and add:
+- `DEPLOY_PATH` — Remote deployment path (e.g., `/opt/myapp`)
+- `TEST_SERVER`, `ACC_SERVER`, `PROD_SERVER` — SSH addresses
+- `JUMP_HOST` — Jump host address (if applicable)
+
+See `.github/SECRETS-SETUP.md` for complete documentation.
+
+### 4. Build and Verify Locally
+
+```bash
+cd deployment
+docker compose --profile all build
 docker compose --profile core --profile blue up -d
-
-# Verify all services are healthy
-docker compose ps
-
-# Test health endpoint
 curl -sf http://localhost/health | jq .
 ```
 
-## Blue-Green Switching
+### 5. Deploy
 
-### Automatic (Recommended)
+Push to the main branch — GitHub Actions handles the rest!
 
-```bash
-# Switch to the opposite color (auto-detects current)
-./scripts/switch-environment.sh
+## Blue-Green Deploy Algorithm
 
-# Force switch to a specific color
-./scripts/switch-environment.sh --force-color green
-```
+The `remote-ops.sh blue-green-deploy` command performs an 11-step zero-downtime deployment:
 
-The script performs:
-1. Builds new Docker image
-2. Starts target replicas
-3. Waits for health checks
-4. Switches Nginx upstream
-5. Reloads Nginx (zero downtime)
-6. Verifies traffic
-7. Stops old replicas
-8. Cleans up
-
-### Manual
-
-```bash
-# 1. Copy the target upstream config
-cp nginx/upstreams/green-upstream.conf nginx/upstreams/active-upstream.conf
-
-# 2. Reload Nginx
-docker compose exec nginx nginx -s reload
-```
-
-## Environment Variables
-
-Create a `.env` file in the project root:
-
-```env
-# Project
-COMPOSE_PROJECT_NAME=appname
-
-# App
-APP_REPLICAS=2               # Replicas per color (blue or green)
-ACTIVE_ENV=blue              # Current active env (managed by switch script)
-
-# Nginx (operates behind ProxyBuilder — HTTP only)
-NGINX_HTTP_PORT=80
-
-# Health Checks (used by switching scripts)
-HEALTH_CHECK_RETRIES=5
-HEALTH_CHECK_INTERVAL=2
-
-# Database
-POSTGRES_USER=appuser
-POSTGRES_PASSWORD=changeme_secure_password
-POSTGRES_DB=appdb
-
-# Redis (optional)
-# REDIS_PASSWORD=changeme_redis_password
-```
-
-> **Tip:** Copy `.env.example` to `.env` to get started: `cp .env.example .env`
-
-## Project Structure
-
-```
-├── app/                        # Node.js application
-│   ├── Dockerfile              # Multi-stage Docker build
-│   ├── server.js               # Express.js server
-│   ├── healthcheck.sh          # Container health check script
-│   ├── start.sh                # Container entrypoint
-│   └── package.json
-├── nginx/                      # Nginx configuration (modular)
-│   ├── nginx.conf              # Main config (behind ProxyBuilder)
-│   ├── conf.d/                 # Server-level includes
-│   ├── includes/               # Reusable config snippets
-│   ├── locations/              # Location blocks (numbered for ordering)
-│   └── upstreams/              # Blue/green upstream definitions
-├── scripts/                    # Automation scripts
-│   ├── switch-environment.sh   # Blue-green deployment switcher
-│   ├── health-check-wait.sh    # Health check polling utility
-│   └── agent.sh                # VS Code settings management
-├── data/                       # Persistent volumes
-├── docker-compose.yml          # Service definitions
-└── .env                        # Environment configuration
-```
+1. Identify active/target colors
+2. Load tarball to Docker image cache
+3. Rebuild target environment
+4. Start target containers
+5. Wait for health checks
+6. Switch Nginx upstream
+7. Reload Nginx (zero downtime)
+8. Verify new environment
+9. Stop old environment
+10. Update active color
+11. Clean up Docker images
 
 ## Docker Compose Profiles
 
 | Profile | Services | Use Case |
 |---------|----------|----------|
-| `core` | nginx, postgres, redis | Core infrastructure |
+| `core` | nginx, dozzle, (postgres, redis) | Core infrastructure |
 | `blue` | app_blue | Blue environment |
 | `green` | app_green | Green environment |
 | `all` | Everything | Full stack |
-| `db` | postgres | Database only (migrations, backups) |
+| `db` | postgres | Database only |
+
+## Remote Operations
+
+The `remote-ops.sh` script provides 18 subcommands:
 
 ```bash
-# Start core + blue
-docker compose --profile core --profile blue up -d
+# Deployment
+remote-ops.sh setup-dirs          # Create directory structure
+remote-ops.sh receive-deploy      # Unpack deployment tarball
+remote-ops.sh rebuild             # Docker compose build + up
+remote-ops.sh blue-green-deploy   # Full zero-downtime deployment
 
-# Start everything
-docker compose --profile all up -d
+# Environment
+remote-ops.sh switch-color        # Toggle blue↔green
+remote-ops.sh active-color        # Show current active color
 
-# Stop everything
-docker compose --profile all down
+# Operations
+remote-ops.sh restart-app         # Restart app containers
+remote-ops.sh restart-all         # Restart all services
+remote-ops.sh health-check        # Check service health
+remote-ops.sh wait-healthy        # Wait for containers to be healthy
+remote-ops.sh view-logs           # Tail container logs
+remote-ops.sh rollback            # Rollback to previous deployment
+
+# Database (if PostgreSQL enabled)
+remote-ops.sh backup              # Create PostgreSQL backup
+remote-ops.sh run-migrations      # Run database migrations
+remote-ops.sh purge-database      # Drop and recreate database
+remote-ops.sh db-table-counts     # Show row counts per table
 ```
 
 ## Security
 
-This Nginx provides comprehensive security hardening:
+Nginx provides comprehensive security hardening:
 
-- **HSTS** — Strict Transport Security (passed through to browser via ProxyBuilder)
-- **CSP** — Content Security Policy (mixed-content: `default-src 'self'` with commented `'unsafe-eval'` toggle)
+- **HSTS** — Strict Transport Security
+- **CSP** — Content Security Policy
 - **X-Frame-Options** — Clickjacking protection
-- **X-Content-Type-Options** — MIME type sniffing prevention
+- **X-Content-Type-Options** — MIME sniffing prevention
 - **Referrer-Policy** — Referrer information control
 - **Permissions-Policy** — Browser feature restrictions
-- **Rate limiting** — Per-client IP (10 req/s API, 100 req/s health, 5 req/m auth template)
+- **Rate limiting** — Per-client IP (10 req/s API, 100 req/s health, 5 req/m auth)
 - **Connection limiting** — Max 10 concurrent connections per IP
-- **Header sanitization** — Strips `X-Powered-By` from upstream responses
-- **Per-location body limits** — 1m default, 100k auth, 10m global fallback
+- **Header sanitization** — Strips `X-Powered-By`
 - **IP anonymization** — GDPR-compliant log anonymization
 
-> **Note:** ProxyBuilder operates in passthrough mode — it handles SSL termination only and adds no security headers. All security hardening is handled by this Nginx layer.
+> **Note:** ProxyBuilder handles SSL termination only. All security hardening is at the Nginx layer.
 
-## Useful Commands
+## Prerequisites
 
-```bash
-# Validate Docker Compose config
-docker compose config
-
-# Build all images
-docker compose build
-
-# Check service health
-docker compose ps
-
-# View logs
-docker compose logs nginx --tail=50
-docker compose logs app_blue --tail=50
-
-# Validate Nginx config (inside container)
-docker compose exec nginx nginx -t
-
-# Reload Nginx (zero downtime)
-docker compose exec nginx nginx -s reload
-
-# Test endpoints
-curl -sf http://localhost/health | jq .
-curl -sf http://localhost/ping | jq .
-```
-
-## Troubleshooting
-
-### Services won't start
-```bash
-docker compose logs --tail=50     # Check all service logs
-docker compose ps                  # Check health status
-```
-
-### Nginx config errors
-```bash
-docker compose exec nginx nginx -t  # Test Nginx configuration
-docker compose logs nginx --tail=20  # Check Nginx error logs
-```
-
-### Health check failures
-```bash
-# Test app directly (bypassing Nginx)
-docker compose exec app_blue curl -sf http://localhost:3000/health
-# Test through Nginx
-curl -sf http://localhost/health | jq .
-```
+- [Node.js](https://nodejs.org/) (18+) — for scaffold generator and BlendSDK apps
+- [Docker](https://docs.docker.com/get-docker/) (20.10+)
+- [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
+- [GitHub CLI](https://cli.github.com/) (`gh`) — for pushing secrets
+- ProxyBuilder (or compatible reverse proxy) — for SSL termination
 
 ## License
 
