@@ -2,14 +2,16 @@
 
 A production-ready **blue-green deployment** infrastructure template using Docker Compose, Nginx, Node.js/Express, PostgreSQL, and Redis.
 
+Designed to operate behind [ProxyBuilder](https://github.com/TrueSoftwareNL/nginx-proxy) — an external reverse proxy that handles SSL termination and certificate management.
+
 ## Architecture
 
 ```
-                     ┌─────────────┐
-Internet ──────────► │    Nginx    │ ◄── SSL termination, rate limiting
-                     │  (reverse   │     security headers, ACME challenges
-                     │   proxy)    │
-                     └──────┬──────┘
+                     ┌──────────────┐
+ProxyBuilder ──────► │    Nginx     │ ◄── Security headers, rate limiting
+  (SSL term.)        │  (reverse    │     blue-green routing
+                     │   proxy)     │
+                     └──────┬───────┘
                             │
               ┌─────────────┼─────────────┐
               ▼                           ▼
@@ -26,13 +28,17 @@ Internet ──────────► │    Nginx    │ ◄── SSL ter
   └────────────┘                           └──────────┘
 ```
 
-**Key feature:** Zero-downtime deployments by switching traffic between blue and green environments.
+**Key features:**
+- **Zero-downtime deployments** by switching traffic between blue and green environments
+- **Full security headers** (HSTS, CSP, X-Frame-Options, etc.) — ProxyBuilder is a passthrough proxy that adds no headers
+- **Rate limiting** keyed on real client IP (X-Forwarded-For from ProxyBuilder)
+- **GDPR-compliant logging** with anonymized IP addresses
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) (20.10+)
 - [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
-- OpenSSL (for SSL certificate generation)
+- ProxyBuilder (or compatible reverse proxy) handling SSL termination
 
 ## Quick Start
 
@@ -40,27 +46,10 @@ Internet ──────────► │    Nginx    │ ◄── SSL ter
 
 ```bash
 # Copy the example .env (adjust values for your setup)
-cp .env.example .env   # Or create .env manually — see "Environment Variables"
+cp .env.example .env
 ```
 
-### 2. Choose Deployment Mode
-
-| Mode | Use Case | SSL | Set in `.env` |
-|------|----------|-----|---------------|
-| **internet** | Public-facing server | ✅ Nginx handles SSL | `NGINX_MODE=internet` |
-| **internal** | Behind a main proxy | ❌ Main proxy handles SSL | `NGINX_MODE=internal` |
-
-### 3. Generate SSL Certificates (Internet Mode Only)
-
-```bash
-# For local development (self-signed)
-./scripts/generate-self-signed-ssl.sh
-
-# For production (Let's Encrypt)
-./scripts/init-letsencrypt.sh
-```
-
-### 4. Start Services
+### 2. Start Services
 
 ```bash
 # Start core infrastructure + blue environment
@@ -117,14 +106,8 @@ COMPOSE_PROJECT_NAME=appname
 APP_REPLICAS=2               # Replicas per color (blue or green)
 ACTIVE_ENV=blue              # Current active env (managed by switch script)
 
-# Nginx
-NGINX_MODE=internet          # internet (SSL) | internal (behind proxy)
+# Nginx (operates behind ProxyBuilder — HTTP only)
 NGINX_HTTP_PORT=80
-NGINX_HTTPS_PORT=443
-
-# Domain & SSL (internet mode only)
-DOMAIN_NAME=example.com
-CERTBOT_EMAIL=admin@example.com
 
 # Health Checks (used by switching scripts)
 HEALTH_CHECK_RETRIES=5
@@ -151,8 +134,7 @@ POSTGRES_DB=appdb
 │   ├── start.sh                # Container entrypoint
 │   └── package.json
 ├── nginx/                      # Nginx configuration (modular)
-│   ├── nginx-internet.conf     # Internet-facing config (SSL + HTTPS)
-│   ├── nginx-internal.conf     # Internal config (HTTP only, behind proxy)
+│   ├── nginx.conf              # Main config (behind ProxyBuilder)
 │   ├── conf.d/                 # Server-level includes
 │   ├── includes/               # Reusable config snippets
 │   ├── locations/              # Location blocks (numbered for ordering)
@@ -160,8 +142,7 @@ POSTGRES_DB=appdb
 ├── scripts/                    # Automation scripts
 │   ├── switch-environment.sh   # Blue-green deployment switcher
 │   ├── health-check-wait.sh    # Health check polling utility
-│   ├── generate-self-signed-ssl.sh  # Self-signed cert generator
-│   └── init-letsencrypt.sh     # Let's Encrypt setup
+│   └── agent.sh                # VS Code settings management
 ├── data/                       # Persistent volumes
 ├── docker-compose.yml          # Service definitions
 └── .env                        # Environment configuration
@@ -174,8 +155,8 @@ POSTGRES_DB=appdb
 | `core` | nginx, postgres, redis | Core infrastructure |
 | `blue` | app_blue | Blue environment |
 | `green` | app_green | Green environment |
-| `internet` | certbot | SSL certificate renewal |
 | `all` | Everything | Full stack |
+| `db` | postgres | Database only (migrations, backups) |
 
 ```bash
 # Start core + blue
@@ -188,26 +169,21 @@ docker compose --profile all up -d
 docker compose --profile all down
 ```
 
-## SSL Certificate Setup
+## Security
 
-### Local Development (Self-Signed)
+This Nginx provides comprehensive security hardening:
 
-```bash
-./scripts/generate-self-signed-ssl.sh
-# Generates certs in nginx/ssl/ — browser will show warnings
-```
+- **HSTS** — Strict Transport Security (passed through to browser via ProxyBuilder)
+- **CSP** — Content Security Policy (API-focused: `default-src 'none'`)
+- **X-Frame-Options** — Clickjacking protection
+- **X-Content-Type-Options** — MIME type sniffing prevention
+- **Referrer-Policy** — Referrer information control
+- **Permissions-Policy** — Browser feature restrictions
+- **Rate limiting** — Per-client IP (10 req/s API, 100 req/s health)
+- **Connection limiting** — Max 10 concurrent connections per IP
+- **IP anonymization** — GDPR-compliant log anonymization
 
-### Production (Let's Encrypt)
-
-```bash
-# First time — requests certificate from Let's Encrypt
-./scripts/init-letsencrypt.sh
-
-# Use --staging flag to test without rate limits
-./scripts/init-letsencrypt.sh --staging
-```
-
-Certbot auto-renews when running with the `internet` profile.
+> **Note:** ProxyBuilder operates in passthrough mode — it handles SSL termination only and adds no security headers. All security hardening is handled by this Nginx layer.
 
 ## Useful Commands
 

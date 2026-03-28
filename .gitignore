@@ -2,16 +2,8 @@
 # .gitignore — Blue-Green Deployment Template
 # =============================================================================
 
-# Environment configuration (contains secrets, passwords, domain names)
+# Environment configuration (contains secrets, passwords)
 .env
-
-# SSL certificates (sensitive — never commit private keys)
-nginx/ssl/*.pem
-nginx/ssl/
-
-# Certbot data (Let's Encrypt account keys and certificates)
-certbot/conf/
-certbot/www/
 
 # PostgreSQL data (persistent database files)
 data/postgresql/*

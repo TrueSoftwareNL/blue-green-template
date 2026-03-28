@@ -1,5 +1,8 @@
 # Refactor Blue-Green Deployment Template
 
+> **Note**: The internet mode and certbot described in this plan were subsequently
+> removed. See [plans/remove-internet-mode/](../remove-internet-mode/00-index.md).
+
 > **Plan Created**: 2026-02-15
 > **Status**: Planning Complete — Ready for Execution
 > **Estimated Sessions**: 7 (one per phase)

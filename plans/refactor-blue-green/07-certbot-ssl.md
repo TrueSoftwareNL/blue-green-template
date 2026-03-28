@@ -1,5 +1,9 @@
 # Technical Spec: Certbot & SSL Configuration
 
+> **⚠️ SUPERSEDED**: This document describes certbot/SSL integration that has been
+> removed from the project. See [plans/remove-internet-mode/](../remove-internet-mode/00-index.md).
+> Kept for historical reference only.
+
 > **Document**: 07-certbot-ssl.md
 > **Last Updated**: 2026-02-15
 > **Affects**: `docker-compose.yml`, `nginx/conf.d/server-ssl.conf`, `nginx/ssl/`, `scripts/generate-self-signed-ssl.sh`, `scripts/init-letsencrypt.sh`
