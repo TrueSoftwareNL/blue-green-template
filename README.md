@@ -174,13 +174,15 @@ docker compose --profile all down
 This Nginx provides comprehensive security hardening:
 
 - **HSTS** — Strict Transport Security (passed through to browser via ProxyBuilder)
-- **CSP** — Content Security Policy (API-focused: `default-src 'none'`)
+- **CSP** — Content Security Policy (mixed-content: `default-src 'self'` with commented `'unsafe-eval'` toggle)
 - **X-Frame-Options** — Clickjacking protection
 - **X-Content-Type-Options** — MIME type sniffing prevention
 - **Referrer-Policy** — Referrer information control
 - **Permissions-Policy** — Browser feature restrictions
-- **Rate limiting** — Per-client IP (10 req/s API, 100 req/s health)
+- **Rate limiting** — Per-client IP (10 req/s API, 100 req/s health, 5 req/m auth template)
 - **Connection limiting** — Max 10 concurrent connections per IP
+- **Header sanitization** — Strips `X-Powered-By` from upstream responses
+- **Per-location body limits** — 1m default, 100k auth, 10m global fallback
 - **IP anonymization** — GDPR-compliant log anonymization
 
 > **Note:** ProxyBuilder operates in passthrough mode — it handles SSL termination only and adds no security headers. All security hardening is handled by this Nginx layer.

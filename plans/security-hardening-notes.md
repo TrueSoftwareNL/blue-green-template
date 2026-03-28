@@ -56,8 +56,8 @@ Every application in this system is a combination of:
 |-------|----------|---------|
 | HTTP between ProxyBuilder and Blue-Green Nginx | ⚠️ Medium | Unencrypted HTTP on the wire. Fine if same machine (localhost). If different machines, plaintext traffic. |
 | `trusted_proxies.conf` trusts entire private ranges | ⚠️ Medium | Trusts ALL of `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. Should be tightened to ProxyBuilder's specific IP. Wide trust = any machine on private network can spoof `X-Forwarded-For`. |
-| No per-location request body size | ⚠️ Low | `client_max_body_size 10m` is global. JSON API endpoints should have much smaller limits (e.g., `1m` or `100k`). |
-| CSP is API-only | ℹ️ Info | CSP `default-src 'none'` is perfect for JSON APIs. Will break any BlendSDK app serving HTML/JS (SSR, admin panels). Needs to be configurable per-application. |
+| No per-location request body size | ✅ Done | Default location set to `1m`, auth template uses `100k`. Global `10m` remains as fallback. |
+| CSP is API-only | ✅ Done | CSP updated to mixed-content policy (`default-src 'self'`). Commented `'unsafe-eval'` variant available. |
 | No `X-Request-ID` end-to-end tracing guarantee | ⚠️ Low | Blue-green Nginx sets `X-Request-ID`, but ProxyBuilder may not pass an existing one through. Request tracing across the full chain may not work end-to-end. |
 | HSTS via HTTP | ℹ️ Info | Blue-green Nginx sends HSTS over HTTP. Works because ProxyBuilder passes the header through to the browser (which sees HTTPS). Unconventional but functional. |
 
@@ -66,9 +66,9 @@ Every application in this system is a combination of:
 | Missing | Severity | Recommendation |
 |---------|----------|----------------|
 | No WAF or request filtering | ❌ Medium | No protection against SQL injection, XSS payloads, path traversal in URLs. Security relies entirely on BlendSDK/WebAFX app layer. |
-| No brute force protection | ❌ Medium | Rate limiting is flat 10 req/s for all API endpoints. Auth endpoints (`/login`, `/oauth`) should have much stricter limits (3-5 req/min). |
+| No brute force protection | ✅ Done | Auth rate limit zone (5r/m) and location template added — customize per deployment. See `nginx/locations/15-auth.conf`. |
 | No IP blocklist/allowlist | ⚠️ Low | No mechanism to block known bad IPs or restrict access to admin endpoints. |
-| No response header sanitization | ⚠️ Low | If the app leaks headers (e.g., `X-Powered-By: Express`), neither ProxyBuilder nor Nginx strips them. |
+| No response header sanitization | ✅ Done | `proxy_hide_header X-Powered-By;` added to `nginx/includes/proxy_headers.conf`. |
 
 ---
 
@@ -95,10 +95,10 @@ Every application in this system is a combination of:
 | Error page sanitization | ✅ Handled | JSON error pages |
 | `server_tokens off` | ✅ Handled | |
 | Trusted proxy config | ⚠️ Too broad | Needs tightening to ProxyBuilder IP |
-| **Per-endpoint rate limits** | ⬜ Future | Auth endpoints need stricter limits |
-| **Strip leaked headers** | ⬜ Future | `proxy_hide_header X-Powered-By;` |
-| **Request size per-location** | ⬜ Future | Different limits for different endpoints |
-| **Flexible CSP per-app** | ⬜ Future | JSON API vs HTML app need different CSPs |
+| **Per-endpoint rate limits** | ✅ Done | Auth rate limit zone + location template (commented, customize per deployment) |
+| **Strip leaked headers** | ✅ Done | `proxy_hide_header X-Powered-By;` in proxy_headers.conf |
+| **Request size per-location** | ✅ Done | Default location: 1m, auth template: 100k, global fallback: 10m |
+| **Flexible CSP per-app** | ✅ Done | Mixed-content CSP with commented eval toggle |
 
 ### Layer 3: BlendSDK/WebAFX App (Application Security)
 
@@ -119,12 +119,12 @@ Every application in this system is a combination of:
 
 ### Priority 1 — Quick Wins
 1. Tighten `trusted_proxies.conf` to ProxyBuilder's specific IP
-2. Add `proxy_hide_header X-Powered-By;` to proxy config
-3. Add per-endpoint rate limits for auth endpoints in nginx locations
+2. ~~Add `proxy_hide_header X-Powered-By;` to proxy config~~ ✅ Done (2026-03-28)
+3. ~~Add per-endpoint rate limits for auth endpoints in nginx locations~~ ✅ Done (2026-03-28)
 
 ### Priority 2 — Medium Effort
-4. Make CSP configurable (support both JSON API and HTML app modes)
-5. Add request body size limits per-location
+4. ~~Make CSP configurable (support both JSON API and HTML app modes)~~ ✅ Done (2026-03-28)
+5. ~~Add request body size limits per-location~~ ✅ Done (2026-03-28)
 6. End-to-end `X-Request-ID` tracing (ProxyBuilder → Nginx → App)
 
 ### Priority 3 — Larger Effort
