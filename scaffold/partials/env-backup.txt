@@ -1,0 +1,8 @@
+# -----------------------------------------------------------------------------
+# PostgreSQL Backup
+# -----------------------------------------------------------------------------
+# Cron schedule for automated backups (default: daily at 2 AM)
+BACKUP_SCHEDULE=0 2 * * *
+# Number of days to retain backup files
+BACKUP_RETENTION_DAYS=30
+

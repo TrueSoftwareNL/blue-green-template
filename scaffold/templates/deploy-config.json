@@ -1,0 +1,21 @@
+{
+  "configs": [
+    {
+      "name": "Docker Environment",
+      "secret_key": "{ENV}_ENV_FILE",
+      "local_file": "local_data/{env}/.env",
+      "deploy_path": ".env"
+    },
+    {
+      "name": "App Config",
+      "secret_key": "{ENV}_APP_CONFIG",
+      "local_file": "local_data/{env}/app-config.json",
+      "deploy_path": "app-config.json"
+    }
+  ],
+  "environments": {
+    "test": "TEST",
+    "acceptance": "ACC",
+    "production": "PROD"
+  }
+}

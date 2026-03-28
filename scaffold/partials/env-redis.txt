@@ -1,0 +1,6 @@
+# -----------------------------------------------------------------------------
+# Redis
+# -----------------------------------------------------------------------------
+# Uncomment and set if you want Redis password authentication
+# REDIS_PASSWORD=changeme_redis_password
+
