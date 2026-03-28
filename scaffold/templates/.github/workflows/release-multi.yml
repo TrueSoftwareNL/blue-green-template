@@ -1,0 +1,244 @@
+name: Release (Multi-Server)
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'Deployment target environment'
+        required: true
+        type: choice
+        options:
+          - test
+          - acceptance
+          - production
+      deploy_scope:
+        description: 'Deploy scope'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - group
+          - tag
+          - server
+      deploy_filter:
+        description: 'Filter value (group name, tag, or server name — required when scope is not "all")'
+        required: false
+        type: string
+        default: ''
+      skip_tests:
+        description: 'Skip tests'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ inputs.deploy_target }}
+  cancel-in-progress: false
+
+jobs:
+  build_and_test:
+    name: Build & Test
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: Clean workspace
+        run: find . -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          npm install -g yarn
+          yarn install --frozen-lockfile
+
+      - name: Build
+        run: yarn clean && yarn build
+
+      - name: Test
+        if: ${{ !inputs.skip_tests }}
+        run: yarn test
+
+  prepare:
+    name: Prepare deployment
+    runs-on: self-hosted
+    timeout-minutes: 10
+    needs: [build_and_test]
+    outputs:
+      servers: ${{ steps.resolve.outputs.servers }}
+      count: ${{ steps.resolve.outputs.count }}
+      access_mode: ${{ steps.resolve.outputs.access_mode }}
+    steps:
+      - name: Clean workspace
+        run: find . -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target servers
+        id: resolve
+        run: |
+          RESULT=$(node deployment/scripts/resolve-servers.js \
+            --env "${{ inputs.deploy_target }}" \
+            --scope "${{ inputs.deploy_scope }}" \
+            --filter "${{ inputs.deploy_filter }}")
+
+          echo "servers=$(echo $RESULT | node -e "d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(JSON.stringify(d.servers))")" >> $GITHUB_OUTPUT
+          echo "count=$(echo $RESULT | node -e "d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.count)")" >> $GITHUB_OUTPUT
+          echo "access_mode=$(echo $RESULT | node -e "d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.access_mode)")" >> $GITHUB_OUTPUT
+
+          echo "📋 Resolved ${{ inputs.deploy_target }}: $(echo $RESULT | node -e "d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.count)") servers"
+
+  # ── Direct SSH / Jump Host deploy (2-20 servers) ───────────
+  deploy-direct:
+    name: Deploy to ${{ matrix.server.name }}
+    runs-on: self-hosted
+    timeout-minutes: 20
+    needs: [prepare]
+    if: needs.prepare.outputs.access_mode != 'deploy_server'
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        server: ${{ fromJSON(needs.prepare.outputs.servers) }}
+    steps:
+      - name: Clean workspace
+        run: find . -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          npm install -g yarn
+          yarn install --frozen-lockfile
+
+      - name: Build
+        run: yarn clean && yarn build
+
+      - name: Setup SSH
+        id: ssh
+        run: |
+          SSH_CONFIG="/tmp/ssh-deploy-config"
+          cat > $SSH_CONFIG << EOF
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+
+          JUMP_HOST="${{ secrets.JUMP_HOST }}"
+          if [ -n "$JUMP_HOST" ]; then
+            echo "  ProxyCommand ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ${JUMP_HOST}" >> $SSH_CONFIG
+          fi
+
+          chmod 600 $SSH_CONFIG
+          echo "ssh_config=$SSH_CONFIG" >> $GITHUB_OUTPUT
+
+      - name: Upload scripts
+        run: |
+          SSH_CONFIG="${{ steps.ssh.outputs.ssh_config }}"
+          REMOTE_HOST="${{ matrix.server.host }}"
+          REMOTE_PATH="${{ secrets.DEPLOY_PATH }}"
+
+          ssh -F $SSH_CONFIG ${REMOTE_HOST} "mkdir -p ${REMOTE_PATH}/scripts"
+          scp -F $SSH_CONFIG deployment/scripts/remote-ops.sh deployment/scripts/health-check-wait.sh ${REMOTE_HOST}:${REMOTE_PATH}/scripts/
+          ssh -F $SSH_CONFIG ${REMOTE_HOST} "chmod +x ${REMOTE_PATH}/scripts/*.sh"
+
+      - name: Setup remote directories
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ matrix.server.host }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh setup-dirs"
+
+      - name: Deploy tarball
+        run: ./deploy-package.sh ${{ matrix.server.host }} ${{ secrets.JUMP_HOST }}
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+
+      - name: Deploy Docker and Nginx configuration
+        run: |
+          SSH_CONFIG="${{ steps.ssh.outputs.ssh_config }}"
+          REMOTE_HOST="${{ matrix.server.host }}"
+          REMOTE_PATH="${{ secrets.DEPLOY_PATH }}"
+
+          scp -F $SSH_CONFIG deployment/Dockerfile deployment/docker-compose.yml ${REMOTE_HOST}:${REMOTE_PATH}/
+          ssh -F $SSH_CONFIG ${REMOTE_HOST} "mkdir -p ${REMOTE_PATH}/nginx/{conf.d,includes,locations,upstreams}"
+          scp -F $SSH_CONFIG deployment/nginx/nginx.conf ${REMOTE_HOST}:${REMOTE_PATH}/nginx/
+          scp -F $SSH_CONFIG deployment/nginx/conf.d/* ${REMOTE_HOST}:${REMOTE_PATH}/nginx/conf.d/
+          scp -F $SSH_CONFIG deployment/nginx/includes/* ${REMOTE_HOST}:${REMOTE_PATH}/nginx/includes/
+          scp -F $SSH_CONFIG deployment/nginx/locations/* ${REMOTE_HOST}:${REMOTE_PATH}/nginx/locations/
+          scp -F $SSH_CONFIG deployment/nginx/upstreams/*-upstream.conf ${REMOTE_HOST}:${REMOTE_PATH}/nginx/upstreams/
+
+      - name: Deploy config files from secrets
+        run: |
+          deployment/scripts/deploy-config-files.sh \
+            "${{ inputs.deploy_target }}" \
+            "${{ steps.ssh.outputs.ssh_config }}" \
+            "${{ matrix.server.host }}" \
+            "${{ secrets.DEPLOY_PATH }}"
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+
+      - name: Blue-green deploy
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ matrix.server.host }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh blue-green-deploy"
+
+      - name: Post-deploy health check
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ matrix.server.host }} \
+            "${{ secrets.DEPLOY_PATH }}/scripts/remote-ops.sh wait-healthy 120"
+
+  # ── Deployment server fan-out (20+ servers) ────────────────
+  deploy-via-server:
+    name: Deploy via deployment server
+    runs-on: self-hosted
+    timeout-minutes: 60
+    needs: [prepare]
+    if: needs.prepare.outputs.access_mode == 'deploy_server'
+    steps:
+      - name: Clean workspace
+        run: find . -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          npm install -g yarn
+          yarn install --frozen-lockfile
+
+      - name: Build
+        run: yarn clean && yarn build
+
+      - name: Setup SSH to deployment server
+        id: ssh
+        run: |
+          SSH_CONFIG="/tmp/ssh-deploy-config"
+          cat > $SSH_CONFIG << EOF
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+          chmod 600 $SSH_CONFIG
+          echo "ssh_config=$SSH_CONFIG" >> $GITHUB_OUTPUT
+
+      - name: Upload deployment package + scripts to deploy server
+        run: |
+          SSH_CONFIG="${{ steps.ssh.outputs.ssh_config }}"
+          DEPLOY_SERVER="${{ secrets.DEPLOY_SERVER }}"
+          REMOTE_PATH="${{ secrets.DEPLOY_PATH }}"
+
+          # Upload everything needed for fan-out
+          ssh -F $SSH_CONFIG ${DEPLOY_SERVER} "mkdir -p ${REMOTE_PATH}/deployment/scripts"
+          ./deploy-package.sh ${DEPLOY_SERVER}
+          scp -F $SSH_CONFIG deployment/scripts/* ${DEPLOY_SERVER}:${REMOTE_PATH}/deployment/scripts/
+          scp -F $SSH_CONFIG deploy-inventory.json ${DEPLOY_SERVER}:${REMOTE_PATH}/
+          ssh -F $SSH_CONFIG ${DEPLOY_SERVER} "chmod +x ${REMOTE_PATH}/deployment/scripts/*.sh"
+
+      - name: Fan-out deploy to all servers
+        run: |
+          ssh -F ${{ steps.ssh.outputs.ssh_config }} ${{ secrets.DEPLOY_SERVER }} \
+            "${{ secrets.DEPLOY_PATH }}/deployment/scripts/multi-deploy.sh \
+              --env ${{ inputs.deploy_target }} \
+              --scope ${{ inputs.deploy_scope }} \
+              --filter '${{ inputs.deploy_filter }}'"

@@ -3,7 +3,7 @@
 > **Document**: 99-execution-plan.md
 > **Parent**: [Index](00-index.md)
 > **Last Updated**: 2026-03-28 19:10
-> **Progress**: 30/42 tasks (71%)
+> **Progress**: 39/42 tasks (93%)
 
 ## Overview
 
@@ -360,20 +360,20 @@ Implement a curl-installable scaffold that adds complete blue-green deployment i
 - [x] 5.1.3 Include optional remote deploy
 - [x] 5.1.4 Include commented-out resource sections
 
-### Phase 6: GitHub Actions — Single Server
-- [ ] 6.1.1 Create build-test.yml
-- [ ] 6.1.2 Create release-single.yml
-- [ ] 6.1.3 Create operations-single.yml
-- [ ] 6.1.4 Create SECRETS-SETUP.md
+### Phase 6: GitHub Actions — Single Server ✅
+- [x] 6.1.1 Create build-test.yml
+- [x] 6.1.2 Create release-single.yml
+- [x] 6.1.3 Create operations-single.yml (+ database ops partials)
+- [x] 6.1.4 Create SECRETS-SETUP.md
 
-### Phase 7: GitHub Actions — Multi Server
-- [ ] 7.1.1 Create release-multi.yml
-- [ ] 7.1.2 Create operations-multi.yml
+### Phase 7: GitHub Actions — Multi Server ✅
+- [x] 7.1.1 Create release-multi.yml (matrix + deploy-server fan-out)
+- [x] 7.1.2 Create operations-multi.yml (multi-server ops dispatch)
 
-### Phase 8: Multi-Server Scripts
-- [ ] 8.1.1 Create deploy-inventory.json template
-- [ ] 8.1.2 Create resolve-servers.js
-- [ ] 8.1.3 Create multi-deploy.sh
+### Phase 8: Multi-Server Scripts ✅
+- [x] 8.1.1 Create deploy-inventory.json template
+- [x] 8.1.2 Create resolve-servers.js
+- [x] 8.1.3 Create multi-deploy.sh
 
 ### Phase 9: Scaffold Generator
 - [ ] 9.1.1 Create scaffold.js skeleton + arg parsing

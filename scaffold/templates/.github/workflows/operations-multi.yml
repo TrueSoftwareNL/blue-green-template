@@ -1,0 +1,157 @@
+name: Operations (Multi-Server)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - test
+          - acceptance
+          - production
+      operation:
+        description: 'Operation to perform'
+        required: true
+        type: choice
+        options:
+          - health-check-all
+          - deploy-config
+          - restart-app
+          - restart-all
+          - health-check
+          - view-logs
+          - switch-color
+          - rollback
+          {{OPERATIONS_DATABASE_OPTIONS}}
+      server_scope:
+        description: 'Server scope'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - group
+          - server
+      server_filter:
+        description: 'Filter value (group name or server name — required when scope is not "all")'
+        required: false
+        type: string
+        default: ''
+
+concurrency:
+  group: ops-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve servers
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      servers: ${{ steps.resolve.outputs.servers }}
+      count: ${{ steps.resolve.outputs.count }}
+      access_mode: ${{ steps.resolve.outputs.access_mode }}
+    steps:
+      - name: Clean workspace
+        run: find . -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            deployment/scripts
+            deploy-inventory.json
+            deploy-config.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve servers
+        id: resolve
+        run: |
+          RESULT=$(node deployment/scripts/resolve-servers.js \
+            --env "${{ inputs.target }}" \
+            --scope "${{ inputs.server_scope }}" \
+            --filter "${{ inputs.server_filter }}")
+
+          echo "servers=$(echo $RESULT | node -e "d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(JSON.stringify(d.servers))")" >> $GITHUB_OUTPUT
+          echo "count=$(echo $RESULT | node -e "d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.count)")" >> $GITHUB_OUTPUT
+          echo "access_mode=$(echo $RESULT | node -e "d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d.access_mode)")" >> $GITHUB_OUTPUT
+
+  operate:
+    name: "${{ inputs.operation }} on ${{ matrix.server.name }}"
+    runs-on: self-hosted
+    timeout-minutes: 15
+    needs: [resolve]
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        server: ${{ fromJSON(needs.resolve.outputs.servers) }}
+    steps:
+      - name: Safety check — block destructive ops on production
+        if: inputs.target == 'production' && inputs.operation == 'purge-database'
+        run: |
+          echo "❌ BLOCKED: purge-database is NEVER allowed on production"
+          exit 1
+
+      - name: Clean workspace
+        run: find . -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            deployment/scripts
+            deploy-config.json
+          sparse-checkout-cone-mode: false
+
+      - name: Setup SSH
+        id: ssh
+        run: |
+          SSH_CONFIG="/tmp/ssh-deploy-config"
+          cat > $SSH_CONFIG << EOF
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+
+          JUMP_HOST="${{ secrets.JUMP_HOST }}"
+          if [ -n "$JUMP_HOST" ]; then
+            echo "  ProxyCommand ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ${JUMP_HOST}" >> $SSH_CONFIG
+          fi
+
+          chmod 600 $SSH_CONFIG
+          echo "ssh_config=$SSH_CONFIG" >> $GITHUB_OUTPUT
+
+      - name: Execute operation
+        run: |
+          SSH_CONFIG="${{ steps.ssh.outputs.ssh_config }}"
+          SERVER="${{ matrix.server.host }}"
+          REMOTE_PATH="${{ secrets.DEPLOY_PATH }}"
+          OP="${{ inputs.operation }}"
+
+          case "$OP" in
+            health-check-all|health-check)
+              ssh -F $SSH_CONFIG ${SERVER} "${REMOTE_PATH}/scripts/remote-ops.sh health-check"
+              ;;
+            deploy-config)
+              deployment/scripts/deploy-config-files.sh \
+                "${{ inputs.target }}" "$SSH_CONFIG" "${SERVER}" "${REMOTE_PATH}"
+              ssh -F $SSH_CONFIG ${SERVER} "${REMOTE_PATH}/scripts/remote-ops.sh restart-app"
+              ;;
+            restart-app|restart-all|view-logs|switch-color|rollback|backup|db-table-counts)
+              ssh -F $SSH_CONFIG ${SERVER} "${REMOTE_PATH}/scripts/remote-ops.sh ${OP}"
+              ;;
+            run-migrations)
+              BACKUP_FLAG=""
+              [ "${{ inputs.target }}" = "production" ] && BACKUP_FLAG="--backup"
+              ssh -F $SSH_CONFIG ${SERVER} "${REMOTE_PATH}/scripts/remote-ops.sh run-migrations ${BACKUP_FLAG}"
+              ;;
+            purge-database)
+              ssh -F $SSH_CONFIG ${SERVER} "${REMOTE_PATH}/scripts/remote-ops.sh purge-database"
+              ;;
+          esac
+          echo "✅ ${OP} completed on ${{ matrix.server.name }}"
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
