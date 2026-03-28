@@ -25,7 +25,7 @@ These rules are **mandatory** and must be consulted before every task.
 ## Project Overview
 
 - **Name:** blue-green-template
-- **Description:** Blue-green deployment template for BlendSDK/WebAFX applications. Provides zero-downtime deployments via Nginx-based blue/green routing, designed to run behind ProxyBuilder for SSL termination.
+- **Description:** Blue-green deployment template and scaffold generator for BlendSDK/WebAFX applications. Provides zero-downtime deployments via Nginx-based blue/green routing, designed to run behind ProxyBuilder for SSL termination. Includes a curl-installable scaffold system that generates project-specific deployment infrastructure.
 - **Type:** infrastructure
 
 ### Architecture
@@ -39,6 +39,26 @@ Internet → ProxyBuilder (SSL termination, passthrough mode)
 - **ProxyBuilder passthrough mode:** Only does SSL termination + basic proxy headers (Host, X-Real-IP, X-Forwarded-For/Proto/Host/Port). NO security headers, no gzip, no WAF.
 - **Blue-Green Nginx:** Handles ALL security hardening, rate limiting, and blue/green traffic routing.
 - **Ecosystem stack:** Every app = BlendSDK/WebAFX + blue-green template + ProxyBuilder
+
+### Scaffold System
+
+```
+curl -fsSL <repo-url>/install.sh | bash
+  → Downloads repo tarball
+  → Runs scaffold/scaffold.js (Node.js, zero external deps, built-in readline)
+  → Interactive prompts: project name, app port, nginx port, entrypoint, replicas
+  → Conditional: PostgreSQL, Redis, pg-backup (yes/no prompts)
+  → Generates deployment/ directory with fully configured infrastructure
+```
+
+- **Entry point:** `install.sh` (thin bash wrapper, downloads repo, invokes scaffold.js)
+- **Generator:** `scaffold/scaffold.js` (~540 lines, zero external dependencies)
+- **Templates:** `scaffold/templates/` (46 template files for deployment infrastructure)
+- **Partials:** `scaffold/partials/` (12 conditional partial files for PostgreSQL/Redis/pg-backup)
+- **Template placeholders:** `{{PROJECT_NAME}}`, `{{APP_PORT}}`, `{{NGINX_PORT}}`, `{{ENTRYPOINT}}`, `{{APP_REPLICAS}}`
+- **Conditional generation:** `{{PARTIAL_*}}` placeholders inject content from `scaffold/partials/` based on user answers
+- **Comment-wrapped placeholders:** In bash templates, `# {{PARTIAL}}` so `bash -n` syntax checks pass on raw templates
+- **Conflict detection:** Skips existing files by default; `--force` flag overwrites
 
 ### Docker Compose Profiles
 
@@ -62,10 +82,11 @@ nginx/upstreams/               — Upstream definitions (blue, green, active)
 
 ## Toolchain
 
-- **Language(s):** Docker, Nginx config, Bash scripts, Node.js (app)
+- **Language(s):** Docker, Nginx config, Bash scripts, Node.js (app + scaffold)
 - **Framework(s):** BlendSDK/WebAFX (app layer)
 - **Package Manager:** npm (app only)
 - **Test Framework:** None (infrastructure project — validation via `docker compose config`)
+- **Scaffold Runtime:** Node.js (zero external dependencies, built-in readline)
 
 **Manifest files found:** docker-compose.yml, app/package.json
 
@@ -100,6 +121,16 @@ clear && sleep 3 && docker compose config && docker compose build
 clear && sleep 3 && bash scripts/switch-environment.sh
 ```
 
+### Scaffold (run from target project)
+
+```bash
+# Install scaffold into a new project (from target project root)
+curl -fsSL https://raw.githubusercontent.com/TrueSoftwareNL/blue-green-template/master/install.sh | bash
+
+# Or run scaffold.js directly during development
+clear && sleep 3 && node scaffold/scaffold.js
+```
+
 ## Project Structure
 
 ### Type: Single repository
@@ -107,6 +138,7 @@ clear && sleep 3 && bash scripts/switch-environment.sh
 ### Directory Layout
 
 ```
+install.sh                     — Curl-installable entry point (downloads repo, runs scaffold.js)
 app/                           — Application container (BlendSDK/WebAFX)
   Dockerfile                   — Multi-stage Node.js build
   package.json                 — App dependencies
@@ -121,9 +153,63 @@ nginx/                         — Nginx configuration (modular)
   includes/                    — Shared config fragments
   locations/                   — Location blocks (numbered for ordering)
   upstreams/                   — Blue/green/active upstream definitions
+scaffold/                      — Scaffold generator system
+  scaffold.js                  — Interactive generator (~540 lines, Node.js, zero deps)
+  templates/                   — Template files (46 files, mirrors deployment structure)
+    .gitignore.template        — Generated .gitignore for target projects
+    deploy-config.json         — Deploy configuration template
+    deploy-inventory.json      — Server inventory template
+    deploy-package.sh          — Deploy packaging script template
+    deployment/                — Full deployment infrastructure templates
+      .env.example             — Environment variable template
+      docker-compose.yml       — Docker Compose template with conditional services
+      Dockerfile               — App Dockerfile template
+      pg-backup.sh             — PostgreSQL backup script (conditional)
+      nginx/                   — Nginx config templates (mirrors nginx/ structure)
+        nginx.conf
+        conf.d/server-name.conf
+        includes/*.conf        — All include templates
+        locations/*.conf       — All location templates
+        upstreams/*.conf       — All upstream templates
+      scripts/                 — Deployment scripts
+        deploy-config-files.sh — Config file deployment script
+        health-check-wait.sh   — Health check wait script
+        multi-deploy.sh        — Multi-server deployment script
+        remote-ops.sh          — Remote operations script (SSH commands)
+        resolve-config.js      — Config resolution (Node.js)
+        resolve-servers.js     — Server inventory resolution (Node.js)
+    local_data/                — Local data directory template
+      .gitkeep                 — Keeps directory in git
+    scripts/                   — Project-level script templates
+      push-secrets.sh          — Secret pushing script template
+  partials/                    — Conditional partial files (12 files)
+    docker-compose-postgres.yml  — PostgreSQL service block
+    docker-compose-redis.yml     — Redis service block
+    docker-compose-pgbackup.yml  — pg-backup service block
+    env-postgres.txt             — PostgreSQL env vars
+    env-redis.txt                — Redis env vars
+    env-backup.txt               — Backup env vars
+    remote-ops-*.sh              — Remote ops conditional sections (4 files)
+    operations-database-*.yml    — GitHub Actions database options/steps (2 files)
 plans/                         — Implementation plans and notes
   remove-internet-mode/        — Completed: removed internet/certbot mode
   refactor-blue-green/         — Original refactoring plan
+  scaffold-deployment/         — Scaffold system implementation plan (10 phases, 47 tasks)
+    00-index.md                — Plan index
+    01-requirements.md         — Requirements document
+    02-current-state.md        — Current state analysis
+    03-scaffold-structure.md   — Scaffold directory structure plan
+    04-deployment-infra.md     — Deployment infrastructure (Nginx, Docker, Dockerfile)
+    05-remote-ops.md           — Remote operations script plan
+    06-config-management.md    — Config management plan
+    07-deploy-package.md       — Deploy packaging plan
+    08-github-actions.md       — GitHub Actions workflows plan
+    09-multi-server.md         — Multi-server deployment plan
+    10-scaffold-generator.md   — scaffold.js generator plan
+    11-installer.md            — install.sh plan
+    12-testing-strategy.md     — Testing strategy
+    99-execution-plan.md       — Execution plan (47/47 tasks complete)
+  security-hardening/          — Security hardening plan (in progress)
   security-hardening-notes.md  — Future security improvements
 scripts/                       — Operational scripts
   agent.sh                     — VS Code agent mode switching
@@ -139,6 +225,8 @@ scripts/                       — Operational scripts
 - **Nginx configs:** Numbered prefix for ordering in `locations/` (`10-health.conf`, `99-default.conf`)
 - **Scripts:** kebab-case with descriptive names
 - **Environment variables:** UPPER_SNAKE_CASE (`ACTIVE_ENV`, `APP_REPLICAS`)
+- **Template files:** Same name as target output file (e.g., `docker-compose.yml` template → generates `docker-compose.yml`)
+- **Partial files:** Descriptive kebab-case with service prefix (`docker-compose-postgres.yml`, `env-redis.txt`, `remote-ops-health-check-db.sh`)
 
 ### Nginx Config Style
 
@@ -153,6 +241,14 @@ scripts/                       — Operational scripts
 - Use `set -e` for error handling
 - Add descriptive comments explaining purpose
 
+### Scaffold Template Style
+
+- **Placeholders:** Use `{{UPPER_SNAKE_CASE}}` for variable substitution (e.g., `{{PROJECT_NAME}}`, `{{APP_PORT}}`)
+- **Conditional partials:** Use `{{PARTIAL_NAME}}` for content injection from `scaffold/partials/`
+- **Comment wrapping:** In bash/shell templates, wrap partials in comments: `# {{PARTIAL_NAME}}` so `bash -n` passes on raw templates
+- **Template mirroring:** Templates in `scaffold/templates/deployment/` mirror the exact directory structure of the generated output
+- **Zero dependencies:** scaffold.js uses only Node.js built-in modules (`fs`, `path`, `readline`)
+
 ## Git & Commit Conventions
 
 ### Commit Scope
@@ -162,6 +258,7 @@ scripts/                       — Operational scripts
 # feat(nginx): description
 # feat(docker): description
 # feat(scripts): description
+# feat(scaffold): description
 # chore(plans): description
 # docs(readme): description
 ```
@@ -172,6 +269,7 @@ scripts/                       — Operational scripts
 - `docker` — Docker Compose, Dockerfile changes
 - `scripts` — Script additions/modifications
 - `app` — Application code changes
+- `scaffold` — Scaffold generator, templates, partials, install.sh
 - `plans` — Plan documents
 - `readme` / `docs` — Documentation
 - `env` — Environment variable changes
@@ -206,6 +304,16 @@ scripts/                       — Operational scripts
   - No per-endpoint rate limits
   - CSP not flexible for HTML apps
   - No WAF
+
+### Scaffold System Rules
+
+- **Template placeholders** (`{{...}}`) are replaced at generation time — they do NOT appear in generated output
+- **Partial injection** is all-or-nothing: if user says "no" to PostgreSQL, the entire PostgreSQL partial is omitted (empty string)
+- **Conflict detection:** scaffold.js skips files that already exist unless `--force` is passed
+- **Generated output structure:** Target project gets `deployment/`, `scripts/push-secrets.sh`, `deploy-config.json`, `deploy-inventory.json`, `deploy-package.sh`, `.gitignore`, `local_data/.gitkeep`
+- **No runtime dependencies:** scaffold.js and all generated scripts use only bash and Node.js built-ins
+- **install.sh requirements:** Must work with `curl -fsSL <url> | bash` — no interactivity in the download phase, interactivity starts when scaffold.js runs
+- **GitHub Actions workflows** are generated into `deployment/` alongside Docker/Nginx configs — they are part of deployment infrastructure, not checked into `.github/` by the scaffold
 
 ## Cross-References
 
